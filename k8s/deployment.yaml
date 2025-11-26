@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
       - name: nodejs-app
-        image: tu-usuario/nodejs-app:latest
+        image:  joseshzlpz/nodejs-app:latest
         ports:
         - containerPort: 3000
         env:

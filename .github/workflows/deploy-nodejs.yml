@@ -1,152 +1,76 @@
-name: 🚀 Build & Deploy NodeJS App to K8s
-
+name: Build & Deploy NodeJS Web
 on:
   push:
     branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
-
-env:
-  DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/nodejs-app
-  NAMESPACE: nodejs-apps
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
-
-      - name: ⎔ Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-
-      - name: 📦 Install dependencies
-        run: npm ci
-
-      - name: 🔍 Run basic tests
-        run: |
-          # Verificar que la aplicación inicia correctamente
-          timeout 10s npm start || exit 0
-          echo "✅ Basic validation passed"
-
-  build-and-deploy:
-    needs: test
+  deploy:
     runs-on: self-hosted
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
-    
+    env:
+      DOCKERHUB_REPO: joseshzlpz/nodejs-app:latest
+      NAMESPACE: nodejs-web
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout
         uses: actions/checkout@v4
-
-      - name: 🔍 Herramientas K8s
+      
+      - name: 🔍 Herramientas
         run: |
           kubectl version --client=true
           kubectl cluster-info
-          echo "📝 Namespace: $NAMESPACE"
-
+      
       - name: 🔐 Login Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: 🏗️ Build Docker image
+        env:
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_PASS: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          docker build \
-            --label "commit=${{ github.sha }}" \
-            --label "branch=${{ github.ref }}" \
-            --label "build-date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-            -t $DOCKERHUB_REPO:${{ github.sha }} .
-
-      - name: 🏷️ Tag and Push Docker images
+          echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+      
+      - name: 🏗️ Build & Push (tags SHA y latest)
+        env:
+          IMAGE_SHA: ${{ env.DOCKERHUB_REPO }}:${{ github.sha }}
+          IMAGE_LATEST: ${{ env.DOCKERHUB_REPO }}:latest
         run: |
-          # Tag with commit SHA
-          docker tag $DOCKERHUB_REPO:${{ github.sha }} $DOCKERHUB_REPO:${{ github.sha }}
-          
-          # Tag as latest for main branch
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            docker tag $DOCKERHUB_REPO:${{ github.sha }} $DOCKERHUB_REPO:latest
-            docker push $DOCKERHUB_REPO:latest
-            echo "🏷️ Pushed latest tag"
-          fi
-          
-          # Tag as develop for develop branch
-          if [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
-            docker tag $DOCKERHUB_REPO:${{ github.sha }} $DOCKERHUB_REPO:develop
-            docker push $DOCKERHUB_REPO:develop
-            echo "🏷️ Pushed develop tag"
-          fi
-          
-          # Always push the SHA tag
-          docker push $DOCKERHUB_REPO:${{ github.sha }}
-          echo "✅ Images pushed successfully"
-
-      - name: 🚀 Apply Kubernetes manifests
+          docker build -t "$IMAGE_SHA" .
+          docker tag "$IMAGE_SHA" "$IMAGE_LATEST"
+          docker push "$IMAGE_SHA"
+          docker push "$IMAGE_LATEST"
+          echo "IMAGE_SHA=$IMAGE_SHA" >> $GITHUB_ENV
+      
+      - name: 🚀 Apply manifests
         run: |
-          # Aplicar todos los manifiestos
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
           kubectl apply -f k8s/ingress.yaml
-
-      - name: 🔄 Actualizar deployment con nueva imagen
+      
+      - name: 🔄 Actualizar imagen a la del commit (SHA)
         run: |
-          kubectl -n $NAMESPACE set image deployment/nodejs-app \
-            nodejs-app=$DOCKERHUB_REPO:${{ github.sha }} \
-            --record=true
-
+          kubectl -n $NAMESPACE set image deployment/nodejs-web nodejs-web=${IMAGE_SHA} --record
+      
       - name: ⏳ Esperar rollout
         run: |
-          kubectl -n $NAMESPACE rollout status deployment/nodejs-app --timeout=600s
-
-      - name: ✅ Verificación del despliegue
+          kubectl -n $NAMESPACE rollout status deploy/nodejs-web --timeout=600s || {
+            echo "⚠️ Rollout timeout, pero verificando estado de pods..."
+            kubectl -n $NAMESPACE get pods
+            kubectl -n $NAMESPACE describe pods | grep -A 5 "Events:"
+            exit 1
+          }
+      
+      - name: ✅ Verificación
         run: |
-          echo "📊 Estado del deployment:"
-          kubectl -n $NAMESPACE get deployment nodejs-app -o wide
-          
-          echo "🐳 Pods:"
-          kubectl -n $NAMESPACE get pods -l app=nodejs-app -o wide
-          
-          echo "🌐 Services:"
-          kubectl -n $NAMESPACE get services -o wide
-          
-          echo "🔀 Ingress:"
-          kubectl -n $NAMESPACE get ingress -o wide
-
-      - name: 🧪 Smoke test
-        run: |
-          # Esperar a que los pods estén ready
-          sleep 30
-          
-          # Obtener un pod para hacer test
-          POD_NAME=$(kubectl -n $NAMESPACE get pods -l app=nodejs-app -o jsonpath='{.items[0].metadata.name}')
-          
-          # Test básico de conectividad
-          kubectl -n $NAMESPACE exec $POD_NAME -- curl -s http://localhost:3000/health || echo "⚠️ Health check falló, pero continuando..."
-
+          kubectl -n $NAMESPACE get deploy,pods,svc,ingress -o wide
+          kubectl -n $NAMESPACE get events --sort-by=.lastTimestamp | tail -50
+      
       - name: 🧰 Diagnóstico si falla
         if: failure()
         run: |
-          echo "❌ Despliegue falló - Recopilando información..."
-          kubectl -n $NAMESPACE describe deployment nodejs-app
-          kubectl -n $NAMESPACE get events --sort-by=.lastTimestamp | tail -20
-          kubectl -n $NAMESPACE logs -l app=nodejs-app --tail=50
+          kubectl -n $NAMESPACE describe deployment/nodejs-web || true
+          kubectl -n $NAMESPACE describe pods || true
+          kubectl -n $NAMESPACE get events --sort-by='.lastTimestamp' | tail -150 || true
 
-      - name: 📊 Enviar métricas
+      - name: 📊 Get metric deploy
         if: always()
         uses: amtelser/metrics-actions@v1
         with:
-          influx_token: ${{ secrets.INFLUXDB_TOKEN }}
+          influx_token: OHWlUihiyAbMLJjQmpD0B2FlzL-8JfgI75C3aTVgCHB5AQqwbmz6qcMIU-h1UXQr9sQcNzcA5e4Cb8_xz935AA==
           job_status: ${{ job.status }}
-
-  cleanup:
-    runs-on: self-hosted
-    if: always()
-    steps:
-      - name: 🧹 Limpiar imágenes antiguas
-        run: |
-          # Limpiar imágenes Docker locales antiguas
-          docker image prune -f --filter "until=24h"
