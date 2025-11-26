@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nodejs-apps
+  labels:
+    name: nodejs-apps
+    environment: production
