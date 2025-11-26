@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
       - name: nodejs-app
-        image:  joseshzlpz/nodejs-app:latest
+        image:  joseshzlpz/pipeline-web:latest
         ports:
         - containerPort: 3000
         env:
