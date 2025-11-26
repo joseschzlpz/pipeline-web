@@ -7,7 +7,7 @@ jobs:
   deploy:
     runs-on: self-hosted
     env:
-      DOCKERHUB_REPO: joseshzlpz/pipeline-web:latest
+      DOCKERHUB_REPO: joseshzlpz/pipeline-web
       NAMESPACE: nodejs-web
     steps:
       - name: 📥 Checkout
